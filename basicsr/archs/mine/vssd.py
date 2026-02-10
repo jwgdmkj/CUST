@@ -1,0 +1,663 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import ops
+import math
+
+# from basicsr.utils.registry import ARCH_REGISTRY
+from timm.models.layers import DropPath
+
+from itertools import repeat
+import collections.abc
+from typing import Tuple
+
+from pdb import set_trace as st
+import numpy as np
+from einops import rearrange, repeat
+
+f"""
+vssd_cab.py
+
+MAMBAv2(VSSD)를 IR에 적용
+https://github.com/YuHengsss/VSSD/blob/main/classification/models/mamba2.py
+
+self.ngroups = 1
+self.linear_attn_duality = True로,
+상당한 양의 코드는 의미가 없음.
+
+패러렐 없이 바닐라 vmamba2로 작성.
+mamba 블록 전후의 dw 없애기.
+
+ConvFFN_v2 대신 CAB(MambaIR)의 것을 사용.
+dw 없이 레거시 사용.
+"""
+# df2k download : https://github.com/dslisleedh/Download_df2k/blob/main/download_df2k.sh
+# dataset prepare : https://github.com/XPixelGroup/BasicSR/blob/master/docs/DatasetPreparation.md
+
+##################################################
+# Layer Norm (입력이 [B,C,H,W]인 것을 전제)
+class LayerNorm(nn.Module):
+    def __init__(self, normalized_shape, eps=1e-6, data_format="channels_first"):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.data_format = data_format
+        if self.data_format not in ["channels_last", "channels_first"]:
+            raise NotImplementedError
+        self.normalized_shape = (normalized_shape, )
+
+    def forward(self, x):
+        if self.data_format == "channels_last":
+            return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+        elif self.data_format == "channels_first":
+            u = x.mean(1, keepdim=True)
+            s = (x - u).pow(2).mean(1, keepdim=True)
+            x = (x - u) / torch.sqrt(s + self.eps)
+            x = self.weight[:, None, None] * x + self.bias[:, None, None]
+            return x
+
+
+
+class tTensor(torch.Tensor):
+    @property
+    def shape(self):
+        shape = super().shape
+        return tuple([int(s) for s in shape])
+    
+def _ntuple(n):
+    def parse(x):
+        if isinstance(x, collections.abc.Iterable):
+            return x
+        return tuple(repeat(x, n))
+    return parse
+
+
+to_1tuple = _ntuple(1)
+to_2tuple = _ntuple(2)
+to_3tuple = _ntuple(3)
+to_4tuple = _ntuple(4)
+to_ntuple = _ntuple
+
+class ChannelAttention(nn.Module):
+    """Channel attention used in RCAN.
+    Args:
+        num_feat (int): Channel number of intermediate features.
+        squeeze_factor (int): Channel squeeze factor. Default: 16.
+    """
+
+    def __init__(self, num_feat, squeeze_factor=16):
+        super(ChannelAttention, self).__init__()
+        self.attention = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(num_feat, num_feat // squeeze_factor, 1, padding=0),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(num_feat // squeeze_factor, num_feat, 1, padding=0),
+            nn.Sigmoid())
+
+    def forward(self, x):
+        y = self.attention(x)
+        return x * y
+
+
+class CAB(nn.Module):
+    def __init__(self, 
+                 num_feat, 
+                 is_light_sr= False, 
+                 compress_ratio=3,
+                 squeeze_factor=30):
+        
+        super(CAB, self).__init__()
+        if is_light_sr: # we use dilated-conv & DWConv for lightSR for a large ERF
+            compress_ratio = 2 
+            self.cab = nn.Sequential(
+                nn.Conv2d(num_feat, num_feat // compress_ratio, 1, 1, 0),
+                nn.Conv2d(num_feat//compress_ratio, num_feat // compress_ratio, 3, 1, 1,groups=num_feat//compress_ratio),
+                nn.GELU(),
+                nn.Conv2d(num_feat // compress_ratio, num_feat, 1, 1, 0),
+                nn.Conv2d(num_feat, num_feat, 3,1,padding=2,groups=num_feat,dilation=2),
+                ChannelAttention(num_feat, squeeze_factor)
+            )
+        else:
+            self.cab = nn.Sequential(
+                nn.Conv2d(num_feat, num_feat // compress_ratio, 3, 1, 1),
+                nn.GELU(),
+                nn.Conv2d(num_feat // compress_ratio, num_feat, 3, 1, 1),
+                ChannelAttention(num_feat, squeeze_factor)
+            )
+
+    def forward(self, x):
+        return self.cab(x)
+    
+##############################################################
+## ConvFFN
+class ConvFFN_v1(nn.Module):
+    def __init__(self,
+                 dim,
+                 ffn_scale=2,
+                 p_ratio=0.5,
+                 use_norm=False,
+                 drop_path = 0.,
+                 ):
+        super().__init__()
+
+        self.expand_dim = int(dim * ffn_scale)
+        self.expand = nn.Conv2d(dim, self.expand_dim, 1, bias=True)    # conv(dim, dim*2, kernel=1)
+        self.act = nn.GELU()
+        
+        self.p = int(p_ratio * self.expand_dim)  # half : dwconv
+        self.dwconv = nn.Conv2d(self.p, self.p, 3, padding=1, groups=self.p, bias=True)
+        self.norm = nn.GroupNorm(1, self.p) if use_norm else nn.Identity()
+        
+        self.project = nn.Conv2d(self.expand_dim, dim, 1, bias=True)  # conv(dim*2, dim, kernel=1)
+        
+        
+    def forward(self, x):
+        y = self.act(self.expand(x))
+        
+        y1, y2 = torch.split(y, [self.p, self.expand_dim - self.p], dim=1)
+        y1 = self.norm(self.dwconv(y1))
+        
+        y = torch.cat([y1, y2], dim=1)
+        y = self.project(y)
+        
+        return y
+    
+class ConvFFN_v2(nn.Module):
+    def __init__(self,
+                 dim,
+                 ffn_scale=2,
+                 p_ratio=0.5,
+                 use_norm=False,
+                 drop_path = 0.,
+                 ):
+        super().__init__()
+
+        self.expand_dim = int(dim * ffn_scale)
+        self.act = nn.GELU()
+        self.p = int(p_ratio * self.expand_dim)  # conv33/conv11 per half
+        
+        self.queryconv = nn.Conv2d(self.p, self.p, 3, 1, 1)
+        self.keyconv = nn.Conv2d(self.expand_dim - self.p, 
+                                 self.expand_dim - self.p, 1, 1, 0)
+        self.norm = nn.GroupNorm(1, self.p) if use_norm else nn.Identity()
+        
+        self.valueconv = nn.Conv2d(self.expand_dim, dim, 1, bias=True)  # conv(dim*2, dim, kernel=1)
+        
+        
+    def forward(self, x):
+        query = self.act(self.queryconv(x))
+        key = self.act(self.keyconv(x))
+        
+        y = torch.cat([query, key], dim=1)
+        y = self.valueconv(y)
+        
+        return y
+
+
+class PCFN(nn.Module):
+    f"""
+    성공작
+    x - conv11(x2) -GeLu & split -- x1 (채널 : dim//2) -- conv33 -|
+                                 |- x2 (채널 : dim*(3/4)) ------- cat -- conv11(/2) - output
+    채널을 2배로 늘린 뒤, 그 1/4(원래 채널의 1/2)에만 conv@33 후 act
+    나머지 3/4와 컨캣 후 conv로 원래 채널 수복
+    """
+    def __init__(self, dim, growth_rate=2.0, p_rate=0.25):
+        super().__init__()
+        hidden_dim = int(dim * growth_rate)
+        p_dim = int(hidden_dim * p_rate)
+        self.conv_0 = nn.Conv2d(dim,hidden_dim,1,1,0)
+        self.conv_1 = nn.Conv2d(p_dim, p_dim ,3,1,1)
+
+        self.act =nn.GELU()
+        self.conv_2 = nn.Conv2d(hidden_dim, dim, 1, 1, 0)
+
+        self.p_dim = p_dim
+        self.hidden_dim = hidden_dim
+
+    def forward(self, x):
+        if self.training:
+            x = self.act(self.conv_0(x))
+            x1, x2 = torch.split(x,[self.p_dim,self.hidden_dim-self.p_dim],dim=1)
+            x1 = self.act(self.conv_1(x1))
+            x = self.conv_2(torch.cat([x1,x2], dim=1))
+        else:
+            x = self.act(self.conv_0(x))
+            x[:,:self.p_dim,:,:] = self.act(self.conv_1(x[:,:self.p_dim,:,:]))
+            x = self.conv_2(x)
+        return x
+    
+##############################################################
+## HSM-SSD
+to_ttensor = lambda *args: tuple([tTensor(x) for x in args]) if len(args) > 1 \
+    else tTensor(args[0])
+
+class BlqSSM(nn.Module):
+    def __init__(self, 
+                 dim, 
+                 state_dim,
+                 ssd_expand,
+                 drop_path=0.1,
+                 idx=0,
+                 type='spatial',
+                 A_init_range=(1, 16),
+                 device=None,
+                 dtype=None,
+                 bias=False,
+                 conv_bias=True,
+                 nheads=4
+                 ):
+        super().__init__()
+        
+        self.dim = dim
+        self.state_dim=state_dim
+        self.ssd_expand = ssd_expand
+        self.d_inner = int(self.ssd_expand * dim)
+        
+        self.idx = idx
+        
+        self.ngroups = 1
+        self.conv_dim = self.d_inner + 2*self.ngroups * self.state_dim  # embed + 2*state_dim
+        self.nheads = nheads
+        self.head_dim = self.d_inner // self.nheads # 임시
+        
+        factory_kwargs = {"device": device, "dtype": dtype}
+        self.type = 'spatial' if type=='spatial' else 'channel'
+        
+        self.ssd_positive_dA = True
+        self.d_in_proj = 2*self.d_inner + 2*self.ngroups*state_dim + self.nheads
+        
+        ## Parameter ----------------------------------------
+        # A
+        assert A_init_range[0] > 0 and A_init_range[1] >= A_init_range[0]
+        A = torch.empty(self.nheads, dtype=torch.float32, device=device).uniform_(*A_init_range)
+        A_log = torch.log(A).to(dtype=dtype)
+        self.A_log = nn.Parameter(A_log)
+        # self.register_buffer("A_log", torch.zeros(self.nheads, dtype=torch.float32, device=device), persistent=True)
+        self.A_log._no_weight_decay = True
+        
+        # D "skip" parameter
+        self.D = nn.Parameter(torch.ones(self.nheads, device=device))
+        self.D._no_weight_decay = True
+        
+        # dt
+        f"""
+        필수는 아니지만, 초기 안정화를 위해 존재.
+        만일 bias=False/True라면, 모든 head가 거의 같은 시간 스케일에서 시작하지만,
+        head 별로 log-uniform으로 뽑은 dt0을 정확히 초기출력으로 만들어, 학습 안정성과 속도가 증가.
+        
+        dt_bias를 만들기 위함. 그 파라미터 사이즈는 nhead
+        u = torch.rand(...) -> [0,1] 균일분포
+        u * (log(dt_max) ...) -> [0, Δ] 균일분포(여기서 Δ = log(dt_max) - log(dt_min)).
+        + log(dt_min) -> [log(dt_min), log(dt_max)] 균일분포(즉 값이 [0, 5]). 
+        exp(log_dt) -> [dt_min, dt_max]에서 log-균일분포(즉 값이 [1, 32]). 원래 우리가 원하는 범위값.
+        clamp : 텐서 값이 dt_init_floor보다 작다면, 이를 dt_init_floor로 올려줌으로써 dt가 너무 작음을 방지.
+        """
+        dt_max = 0.1
+        dt_min = 0.001
+        dt_init_floor= 1e-4
+        
+        dt = torch.exp(
+            torch.rand(self.nheads, **factory_kwargs) * (math.log(dt_max) - math.log(dt_min))
+            + math.log(dt_min)
+        )
+        dt = torch.clamp(dt, min=dt_init_floor)
+        
+        # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
+        f"""
+        dt를 softplus의 역함수값으로 변환 후, 이를 파라미터화.
+        즉 dt라는 양수값을 받아, 그 값이 softplus를 통과했을 때 다시 dt가 나오도록 변환.
+        dt0 = softplus(dt_bias)이기 위해, 
+        dt_bias = softplus^(-1)(dt_0)을 만든 것.
+        
+        초기에 log-uniform으로 뽑은 특정한 값 dt0이 있다. 
+        forward에서 dt=dt_0이길 원함.
+        위의 과정을 거치면, dt가 초기에 0에 가까울 때, 
+        F.softplus(0 + dt_bias) = dt0를 성립시켜,
+        여기에서 샘플링한 log-uniform dt(=dt0)가 정확히 초기값이 되게 함.
+        """ 
+        inv_dt = dt + torch.log(-torch.expm1(-dt))
+        self.dt_bias = nn.Parameter(inv_dt)
+        
+        # Just to be explicit. Without this we already don't put wd on dt_bias because of the check
+        # name.endswith("bias") in param_grouping.py
+        self.dt_bias._no_weight_decay = True
+        
+        ## Algorhithm ----------------------------------------
+        # Processing
+        self.in_proj = nn.Linear(self.dim, int(self.d_in_proj), bias=bias, **factory_kwargs)
+        # print(f'0) init - in_proj : {int(self.d_in_proj)} due to 2*d_inner + 2*ngroups*state_dim + nheads')
+        # print(f'here, d_inner:{self.d_inner}, state_dim:{self.state_dim}, nhead:{self.nheads}')
+        self.act = nn.SiLU()
+        self.conv2d = nn.Conv2d(
+            in_channels = self.conv_dim,
+            out_channels=self.conv_dim,
+            groups=self.conv_dim,
+            bias=conv_bias,
+            kernel_size=3,
+            padding=1,
+            **factory_kwargs,
+        )   # conv_dim = embedding + 2*state_dim
+        
+        self.norm = nn.LayerNorm(self.d_inner)  # 입력이 [B, HW, C]임을 전제
+        self.out_proj = nn.Linear(self.d_inner, self.dim, bias=bias, **factory_kwargs)
+        
+        
+    #######################################################################
+    ## Non-causal SSM (단, head를 제거한 상태)
+    def non_causal_linear_attn(self, x, dt, A, B, C, D, H=None, W=None):
+        ''''
+        non-casual attention duality of mamba v2
+        x: (B, L, H, D), equivalent to V in attention
+        dt: (B, L, nheads)
+        A: (nheads) or (d_inner, d_state)
+        B: (B, L, d_state), equivalent to K in attention
+        C: (B, L, d_state), equivalent to Q in attention
+        D: (nheads), equivalent to the skip connection
+        '''
+        
+        batch, seqlen, head, dim = x.shape    # original : [B, L, head, dim//head]
+        dstate = B.shape[2]
+        V = x.permute(0, 2, 1, 3) # (B, H, L, D)
+        dt = dt.permute(0, 2, 1) # (B, H, L)
+        dA = dt.unsqueeze(-1) * A.view(1, -1, 1, 1).repeat(batch, 1, seqlen, 1)
+        if self.ssd_positive_dA: dA = -dA
+        
+        # print(f'6) x:{x.shape}, V:{V.shape}, dt:{dt.shape}, dA:{dA.shape}')
+
+        V_scaled = V * dA
+        K = B.view(batch, 1, seqlen, dstate)# (B, 1, L, D)
+        if getattr(self, "__DEBUG__", False):
+            A_mat = dA.cpu().detach().numpy()
+            A_mat = A_mat.reshape(batch, -1, H, W)
+            setattr(self, "__data__", dict(
+                dA=A_mat, H=H, W=W, V=V,))
+        
+        ## get kv via transpose K and V
+        KV = K.transpose(-2, -1) @ V_scaled # (B, H, dstate, D)
+        st()
+        Q = C.view(batch, 1, seqlen, dstate)#.repeat(1, head, 1, 1)
+        x = Q @ KV # (B, H, L, D)
+        x = x + V * D.view(1, -1, 1, 1).repeat(batch, 1, seqlen, 1)
+        x = x.permute(0, 2, 1, 3).contiguous()  # (B, L, H, D)
+            
+        return x      
+
+    #######################################################################
+    ## Overall SSM
+    def forward(self, x):
+        if self.type == 'spatial':
+            batch, chan, H, W = x.shape
+            x = x.flatten(2).contiguous()   # [B, C, HW]
+        elif self.type == 'channel':
+            batch, H, W, chan = x.shape
+            x = x.flatten(1, 2).contiguous()    # [B, HW, C]
+        
+        x = x.transpose(1, 2)   # [B, HW(=L), C] <- [B, C, HW] vice versa
+        
+        # print('1) x shape : ', x.shape)
+        
+        zxbcdt = self.in_proj(x)  # (B, L, d_in_proj)
+        A = -torch.exp(self.A_log)  # (nheads) or (d_inner, d_state)
+        
+        # print('2) A and zxbcdt : ', A.shape, zxbcdt.shape)
+
+        ################################
+        # 1. Z, A, B, c, delta 만들기
+        ################################
+        z, xBC, dt = torch.split(
+            zxbcdt, 
+            [self.d_inner, self.d_inner + 2 * self.ngroups * self.state_dim, self.nheads],
+            dim=-1
+        )
+        dt = F.softplus(dt + self.dt_bias)  # (B, L, nheads)
+        
+        # print('3) z, xbc and dt: ', z.shape, xBC.shape, dt.shape)
+
+        #2D Convolution
+        xBC = xBC.view(batch, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        xBC = self.act(self.conv2d(xBC))
+        xBC = xBC.permute(0, 2, 3, 1).view(batch, H*W, -1).contiguous() # [b, hw, c]
+        # print('4) after conv, xBC : ', xBC.shape)
+
+        # These correspond to V, K, Q respectively in the SSM/attention duality
+        x, B, C = torch.split(xBC, [self.d_inner, 
+                                    self.ngroups * self.state_dim, 
+                                    self.ngroups * self.state_dim], dim=-1)
+        x, dt, A, B, C = to_ttensor(x, dt, A, B, C)
+        # print('5) x b and c : ', x.shape, B.shape, C.shape)
+        
+        ################################
+        # 2. Non-Causal SSM 실행
+        ################################
+        y = self.non_causal_linear_attn(
+            rearrange(x, "b l (h p) -> b l h p", p=self.head_dim),
+            dt, A, B, C, self.D, H, W
+        )
+        
+        y = rearrange(y, "b l h p -> b l (h p)")
+
+        ###################################################
+        # 3. Gate branch를 곱하고, extra normalization 실행
+        ###################################################
+        # y = self.norm(y, z)
+        y = self.norm(y)
+        y = y*z
+        out = self.out_proj(y)
+        out = out.view(batch, H, W, chan).permute(0, 3, 1, 2).contiguous()
+        return out
+
+
+
+##############################################################
+## EfficientViMBlock
+class BlqMamba(nn.Module):
+    def __init__(self,
+                 dim,  
+                 state_dim=15,
+                 chan_state_dim=1,
+                 ssd_expand=1,
+                 n_level=1,
+                 drop_path=0.1,
+                 nheads=4
+                 ):
+        
+        super().__init__()
+        
+        self.dim = dim
+        self.n_levels = n_level
+        self.state_dim = state_dim
+        self.chan_state_dim = chan_state_dim
+        self.ssd_expand = ssd_expand
+        self.drop_path=drop_path
+        self.nheads = nheads
+
+        # Mamba Branch
+        self.mmb = nn.ModuleList([
+            BlqSSM(dim // self.n_levels,
+                           state_dim=state_dim,
+                           ssd_expand=ssd_expand,
+                           drop_path=drop_path,
+                           idx=i,
+                           type='spatial',
+                           nheads=self.nheads)
+            for i in range(self.n_levels)])
+        
+        ##################################################
+        # Feature Aggregation Methods
+        # 1) Conv 1x1
+        # self.aggr = nn.Conv2d(dim, dim, 1, 1, 0)
+        
+        # 2) Channel-wise SSM
+        # self.chan_mmb = BlqSSM(1,
+        #                        state_dim=chan_state_dim,
+        #                        ssd_expand=ssd_expand,
+        #                        idx=0,
+        #                        type='channel')
+        # self.avgpool = nn.AdaptiveAvgPool2d(1)
+        ##################################################
+        
+        # Activation
+        self.act = nn.GELU() 
+
+    def forward(self, x):
+        out = self.mmb[0](x)
+        return out
+
+##############################################################
+## Block
+class BasicBlock(nn.Module):
+    def __init__(self, 
+                 dim, 
+                 ffn_scale=2.0, 
+                 state_dim=15,
+                 chan_state_dim=1,
+                 ssd_expand=1,
+                 drop_path=0.,
+                 nheads=4,):
+        
+        super().__init__()
+            
+        # norm
+        self.norm1 = LayerNorm(dim) 
+        self.norm2 = LayerNorm(dim) 
+
+        # DropPath
+        self.drop_path = DropPath(drop_path) if drop_path > 0 else nn.Identity()
+        
+        # Multiscale Block
+        self.blqm = BlqMamba(dim, 
+                             state_dim=state_dim,
+                             chan_state_dim=chan_state_dim,
+                             ssd_expand=ssd_expand,
+                             drop_path=drop_path,
+                             nheads=nheads,
+                             ) 
+        
+        # Feedforward layer
+        self.convffn = PCFN(dim, 
+                       growth_rate=ffn_scale) 
+
+    def forward(self, x):
+        # legacy code ---------------------------
+        x = self.blqm(self.norm1(x)) + x
+        x = self.convffn(self.norm2(x)) + x
+        
+        return x
+        
+
+##############################################################
+## Overall Architecture
+# @ARCH_REGISTRY.register()
+class MambaIR(nn.Module):
+    def __init__(self, 
+                 dim, 
+                 in_chans=3,
+                 n_blocks=8, 
+                 ffn_scale=2.0, 
+                 ssd_expand=1,
+                 state_dim=15,
+                 chan_state_dim=1,
+                 upscale=4,
+                 drop_rate=0.,
+                 drop_path_rate=0.1,
+                 nheads=4,
+    ):
+        
+        
+        f"""
+        원본 : in_dim : 전체적인 dim(60, 84...) 
+        out_dim : 다음 stage에서의 dim. 여기에서는 in_dim과 같게. --> 두개 다 dim으로 퉁치기.
+        depths : 각 stage 별 block 개수. 일단 stage=4, block=8로 설정 --> n_blocks
+        mlp_ratio : 2 --> ffn_scale
+        ssd_expand : 1
+        state_dim : B, C, dt의 dim. 
+        + channel-wise state_dim : 4개의 branch의 mixing 용 mamba의 state_dim.
+        + upscaling_factor : (2, 3, 4)
+        
+        dim=60 -> state_dim=15(1/4) / chan_state_dim=1
+        """
+        
+        super().__init__()
+        
+        # variants
+        self.dim = dim
+        self.ffn_scale = ffn_scale
+        self.state_dim = state_dim
+        self.chan_state_dim = chan_state_dim
+        
+        # stochastic depth
+        # dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, n_blocks)]    
+        
+        # Architecture
+        self.to_feat = nn.Conv2d(in_chans, dim, 3, 1, 1)
+        
+        self.feats = nn.Sequential(*[BasicBlock(dim, 
+                                              ffn_scale, 
+                                              state_dim=state_dim,
+                                              chan_state_dim=chan_state_dim,
+                                              ssd_expand=ssd_expand,
+                                              # drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],  # no impact on SR results
+                                              drop_path = dpr[i],
+                                              nheads=nheads,
+                                              ) 
+                                     for i in range(n_blocks)])
+
+        self.to_img = nn.Sequential(
+            nn.Conv2d(dim, 3 * upscale**2, 3, 1, 1),
+            nn.PixelShuffle(upscale)
+        )
+        
+        
+    def check_img_size(self, x):
+        _, _, h, w = x.size()
+        downsample_scale = 8
+        scaled_size = downsample_scale
+        
+        mod_pad_h = (scaled_size - h % scaled_size) % scaled_size
+        mod_pad_w = (scaled_size - w % scaled_size) % scaled_size
+        x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h), 'reflect')
+        return x
+        
+        
+    def forward(self, x):
+        B, C, H, W = x.shape
+        
+        # check image size
+        x = self.check_img_size(x)  
+        
+        # patch embed
+        x = self.to_feat(x)
+        
+        # module, and return to original shape
+        x = self.feats(x) + x
+        x = x[:, :, :H, :W]
+        
+        # reconstruction
+        x = self.to_img(x)
+        return x
+
+
+
+if __name__== '__main__':
+    #############Test Model Complexity #############
+    # from fvcore.nn import flop_count_table, FlopCountAnalysis, ActivationCountAnalysis    
+    # x = torch.randn(1, 3, 640, 360)
+    # x = torch.randn(1, 3, 427, 240)
+    x = torch.randn(1, 3, 320, 180)
+    # x = torch.randn(1, 3, 256, 256)
+
+    model = MambaIR(dim=84, 
+                    n_blocks=12, 
+                    state_dim = 42, 
+                    ffn_scale=2.0, 
+                    upscale=2,
+                    nheads=7,)
+    # model = LMLT(dim=36, n_blocks=12, ffn_scale=2.0, upscaling_factor=2)
+    print(model)
+    print(f'params: {sum(map(lambda x: x.numel(), model.parameters()))}')
+    # print(flop_count_table(FlopCountAnalysis(model, x), activations=ActivationCountAnalysis(model, x)))
+    output = model(x)
+    print(output.shape)
