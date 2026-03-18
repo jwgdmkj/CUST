@@ -1,4 +1,4 @@
-# LMLT(Low-to-high Multi-Level Vision Transformer)
+# CUST(Clustered Unit-level Similarity Transformer for Lightweight Image Super-Resolution)
 
 Jeongsoo Kim, Jongho Nang, Junsuk Choe<sup>*</sup>
 
