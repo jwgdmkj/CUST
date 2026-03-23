@@ -43,7 +43,7 @@ python3 basicsr/test.py -opt options/test/CUST_base(small)/test_base(small)_benc
 ![Readme1](https://github.com/user-attachments/assets/664d700d-59a1-43e1-b6ab-9cefc9a1107a)
 Result table with #Param and #FLOPs
 
-![image](https://github.com/user-attachments/assets/bbd6b28c-9bac-42c7-956d-2805e66382fb)
+![image](https://github.com/user-attachments/assets/88c782af-f972-4c68-912d-e313c25d178a)
 Result table with GPU Consumption and AVG Time
 
 ### Results
