@@ -2,8 +2,8 @@
 
 Jeongsoo Kim
 
-### Requirements
---
+## Requirements
+
 ```
 # Install Packages
 pip install -r requirements.txt
@@ -14,8 +14,8 @@ python3 setup.py develop
 ```
 
 
-### Dataset
----
+## Dataset
+
 We use DIV2 as Training dataset.
 You can download two datasets at https://github.com/dslisleedh/Download_df2k/blob/main/download_df2k.sh
 and prepare other test datasets at https://github.com/XPixelGroup/BasicSR/blob/master/docs/DatasetPreparation.md#Common-Image-SR-Datasets
