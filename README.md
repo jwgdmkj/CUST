@@ -28,7 +28,7 @@ By running the code above, you may get subimages of training datasets.
 
 ## Pretrained Models
 
-Pre-trained models can be downloaded from ```experiments/pretrained_models```.
+Pre-trained models can be downloaded from ```experiments/pretrained_model```.
 
 ## Training and Test
 
