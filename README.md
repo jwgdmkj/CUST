@@ -33,14 +33,14 @@ Pre-trained models can be downloaded from ```experiments/pretrained_model```.
 
 ## Training and Test
 
-You can train LMLT following commands below 
+You can train our CUST following commands below 
 ```
 python3 basicsr/train.py -opt options/train/CUST/cust_base(plus, small)_x2(3,4).yml
 ```
 
 
 ### Test
-You can test LMLT following commands below
+You can test our CUST following commands below
 ```
 python3 basicsr/test.py -opt options/test/CUST_base(small)/test_base(small)_benchmark_x2(3, 4).yml
 ```
