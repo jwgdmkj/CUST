@@ -29,15 +29,14 @@ By running the code above, you may get subimages of training datasets.
 ### Training
 You can train LMLT following commands below 
 ```
-python3 basicsr/train.py -opt options/train/LMLT/train_tiny(base, large)_DF2K_X2(3, 4).yml
+python3 basicsr/train.py -opt options/train/CUST/cust_base(plus, small)_x2(3,4).yml
 ```
-And also, we set `torch.backends.cudnn.benchmark` to `True` to accelerate training process so that results can be fluctuated a little. If you want to get fixed output, you should set it to `False` and set `torch.backends.cudnn.deterministic` to `True`.
 
 
 ### Test
 You can test LMLT following commands below
 ```
-python3 basicsr/test.py -opt options/test/LMLT/test_tiny(base, large)_benchmark_X2(3, 4).yml
+python3 basicsr/test.py -opt options/test/CUST_base(small)/test_base(small)_benchmark_x2(3, 4).yml
 ```
 
 ### Result
@@ -48,5 +47,5 @@ Result table with #Param and #FLOPs
 Result table with GPU Consumption and AVG Time
 
 ### Results
-We will provide visual results of LMLT_Base x4 scale soon. 
-If you want to see only architecture, please refer to `LMLT.py`.
+We will provide visual results of CUST_Base soon. 
+If you want to see only architecture, please refer to `CUST_arch.py`.
