@@ -7,15 +7,11 @@ import time
 import torch
 
 import basicsr.utils.img_util as util
-# from basicsr.archs.lmlt_arch import LMLT
 from collections import OrderedDict
 from basicsr.utils import get_root_logger, get_time_str
 from basicsr.utils.model_summary_util import get_model_activation, get_model_flops
 
-from basicsr.archs.mine.cust.low_to_high import CUSTNet
-from basicsr.archs.others.catanet import CATANet
-from basicsr.archs.mine.cust.low_to_high_aeg_expand import CUSTNet as cust_expand
-from basicsr.archs.mine.cust.cust_ms_final import CUSTNet as cust_ms_final
+from basicsr.archs.cust_ms_final import CUSTNet as CUST
 
 '''
 This code can help you to calculate:
@@ -72,16 +68,15 @@ def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Define network and load model
-    # model = CUSTNet(dim=44, upscaling_factor=4)
-    # model = CATANet(upscale=4)
-    # model = cust_expand(dim=40, upscaling_factor=4)
-    model = cust_ms_final(dim=30, 
-                          patch_size=[18,18,18,18,18,18,18,18], 
-                          group_size=9, 
-                          upscaling_factor=4)
+    model = CUST(dim=30, 
+                 patch_size=[18,18,18,18,18,18,18,18],
+                 window_size=8, 
+                 group_size=10, 
+                 upscaling_factor=2)
+ 
     
     model.load_state_dict(torch.load(args.pretrain_model)['params'], strict=True)
-    
+  
     model.eval()
     for k, v in model.named_parameters():
         v.requires_grad = False
@@ -143,17 +138,16 @@ def main(args):
     ave_runtime = sum(test_results['runtime']) / len(test_results['runtime'])
     logger.info('------> Average runtime of ({}) is : {:.6f} ms'.format(args.lr_path, ave_runtime))
 
-# /data/SR/weights/catanet_x4.pth
-# /workspace/LMLT/experiments/LTH_b16/models/net_g_2500.pth
+### Main ##########################################
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_name', type=str, default='CUSTNet', help='method name')
-    parser.add_argument('--lr_path', type=str, default='/workspace/LMLT/basicsr/inference_img/x4', help='Path to the LR image')
+    parser.add_argument('--model_name', type=str, default='LMLT', help='method name')
+    parser.add_argument('--lr_path', type=str, default='/workspace/CUST/basicsr/inference_img_maker/x2', help='Path to the LR image')
     parser.add_argument('--log_path', type=str, default='results/', help='Path to log file')
     parser.add_argument('--save_results', action='store_true', help='if true save SR results')
     parser.add_argument('--print_modelsummary', action='store_true', help='if true print modelsummary; set False when calculating `Max Memery` and `Runtime`')
     parser.add_argument('--save_path', type=str, default='results/', help='Path to results')
-    parser.add_argument('--pretrain_model', type=str, default='/workspace/LMLT/experiments/cust_plus_light_x4/models/net_g_500000.pth', help='Path to the pretrained model')
+    parser.add_argument('--pretrain_model', type=str, default='/workspace/CUST/experiments/pretrained_models/cust_base_x2.pth', help='Path to the pretrained model')
     args = parser.parse_args()
 
     main(args)
