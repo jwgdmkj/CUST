@@ -47,6 +47,8 @@ python3 basicsr/test.py -opt options/test/CUST_base(small)/test_base(small)_benc
 #### Result Table with GPU Consumption and AVG Inference Time
 ![image](https://github.com/user-attachments/assets/fa179efd-698e-4547-b8b6-356e9b6ab304)
 
+#### Qualtitative Results
+![image](https://github.com/user-attachments/assets/8796100d-76dd-4fa2-8822-873f07d37b1e)
 
 ### Results
 We will provide visual results of CUST_Base soon. 
