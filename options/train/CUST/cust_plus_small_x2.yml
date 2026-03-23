@@ -1,0 +1,134 @@
+name: cust_plus_x2 # x2 -> x4 로 이름 변경
+model_type: SRModel
+scale: 2  # 스케일 2 -> 4 변경
+num_gpu: 1
+manual_seed: 10
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DIV2K
+    type: PairedImageDataset
+    dataroot_gt: /data/SR/div2k/DIV2K_train_HR_sub
+    dataroot_lq: /data/SR/div2k/DIV2K_train_LR_bicubic/X2_sub # path 변경
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+
+    gt_size: 128  # (128-192-256)
+    use_hflip: true
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 8 # 28
+    batch_size_per_gpu: 32  # 16
+    dataset_enlarge_ratio: 10
+    prefetch_mode: 'cuda'
+    pin_memory: true
+
+  val:
+    name: Urban100
+    type: PairedImageDataset
+    dataroot_gt: /data/SR/testset/urban100/HR
+    dataroot_lq: /data/SR/testset/urban100/LR_bicubic/X2  # path 변경
+    filename_tmpl: '{}x2'
+    io_backend:
+      type: disk
+
+# network structures
+network_g:
+  type: CUSTNet
+  upscaling_factor: 2  # 네트워크 스케일 2 -> 4 변경
+  dim : 30  #
+  patch_size : [18,18,18,18,18,18,18,18]
+  window_size : 8
+  group_size : 10
+
+# path
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+
+# training settings
+# ----------------------------------------------------
+# train:
+#   optim_g:
+#     type: Adam
+#     lr: !!float 2e-4
+#     weight_decay: 0
+#     betas: [0.9, 0.99]
+
+#   scheduler:
+#     type: MultiStepLR
+#     milestones: [300000, 500000, 650000, 700000, 750000]
+#     gamma: 0.5
+
+#   total_iter: 800000
+
+#   # losses
+#   pixel_opt:
+#     type: L1Loss
+#     loss_weight: 1.0
+#     reduction: mean
+# ----------------------------------------------------
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: Adam
+    lr: !!float 5e-4
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [250000, 400000, 450000, 475000]
+    gamma: 0.5
+
+  warmup_iter: 20000 
+
+  use_grad_clip: true
+  grad_clip_max_norm: 0.1
+
+  total_iter: 500000
+
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+
+  fft_opt:
+    type: FFTLoss
+    loss_weight: 0.05
+    reduction: mean
+
+# validation settings
+val:
+  val_freq: !!float 2500
+  save_img: false
+
+  metrics:
+    psnr: # metric name, can be arbitrary
+      type: calculate_psnr
+      crop_border: 2  # 2 -> 4 변경 (스케일 값만큼 crop)
+      test_y_channel: true
+
+    ssim:
+      type: calculate_ssim
+      crop_border: 2  # 2 -> 4 변경
+      test_y_channel: true
+
+# logging settings
+logger:
+  print_freq: 200
+  save_checkpoint_freq: !!float 2500
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
