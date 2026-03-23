@@ -26,9 +26,12 @@ python3 scripts/data_preparation/extract_subimages.py
 ```
 By running the code above, you may get subimages of training datasets.
 
+## Pretrained Models
 
+Pre-trained models can be downloaded from ```experiments/pretrained_models```.
 
-### Training and Test
+## Training and Test
+
 You can train LMLT following commands below 
 ```
 python3 basicsr/train.py -opt options/train/CUST/cust_base(plus, small)_x2(3,4).yml
@@ -41,7 +44,7 @@ You can test LMLT following commands below
 python3 basicsr/test.py -opt options/test/CUST_base(small)/test_base(small)_benchmark_x2(3, 4).yml
 ```
 
-## Result
+## Results
 ### Result Table with #Param and #FLOPs
 ![Readme1](https://github.com/user-attachments/assets/664d700d-59a1-43e1-b6ab-9cefc9a1107a)
 
