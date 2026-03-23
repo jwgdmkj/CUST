@@ -40,7 +40,7 @@ python3 basicsr/test.py -opt options/test/CUST_base(small)/test_base(small)_benc
 ```
 
 ### Result
-![Readme1](https://github.com/user-attachments/assets/67dbd3ea-fcd4-46fb-a8d3-0b7a9608634a)
+![Readme1](https://github.com/user-attachments/assets/664d700d-59a1-43e1-b6ab-9cefc9a1107a)
 Result table with #Param and #FLOPs
 
 ![image](https://github.com/user-attachments/assets/bbd6b28c-9bac-42c7-956d-2805e66382fb)
