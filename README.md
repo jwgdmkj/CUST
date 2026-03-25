@@ -1,7 +1,5 @@
 # CUST
-Jeongsoo Kim
 
-This repository is official implementation of "CUST : Clustered Unit-level Similarity Transformer for Lightweight Image Super-Resolution".
 
 ## Requirements
 
