@@ -1,4 +1,4 @@
-# CUST
+# [ECCV 2026] CUST : Clustered Unit-level Similarity Transformer for Lightweight Image Super-Resolution
 
 
 ## Requirements
