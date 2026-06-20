@@ -1,5 +1,7 @@
 # [ECCV 2026] CUST : Clustered Unit-level Similarity Transformer for Lightweight Image Super-Resolution
 
+Our project has been accepted as a poster presentation at ECCV 2026.
+
 
 ## Requirements
 
