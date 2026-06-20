@@ -1,5 +1,8 @@
 # [ECCV 2026] CUST : Clustered Unit-level Similarity Transformer for Lightweight Image Super-Resolution
 
+Author : Jeongsoo Kim
+
+
 Our project has been accepted as a poster presentation at ECCV 2026.
 
 
