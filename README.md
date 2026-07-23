@@ -1,3 +1,9 @@
+<!-- Hugging Face Paper 배지 -->
+<a href="https://huggingface.co/papers/2607.11088" target="_blank">
+  <img src="https://img.shields.io/badge/Hugging%20Face-Paper-yellow?style=flat-square&logo=huggingface&logoColor=black" alt="Hugging Face Paper"/>
+</a>
+
+
 # [ECCV 2026] CUST : Clustered Unit-level Similarity Transformer for Lightweight Image Super-Resolution
 
 Author : Jeongsoo Kim
