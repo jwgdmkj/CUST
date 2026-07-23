@@ -4,6 +4,7 @@ Author : Jeongsoo Kim
 
 
 Our project has been accepted as a poster presentation at ECCV 2026.
+
 Our paper is available at [here](https://arxiv.org/abs/2607.11088).
 
 ## Requirements
