@@ -3,6 +3,10 @@
   <img src="https://img.shields.io/badge/Hugging%20Face-Paper-yellow?style=flat-square&logo=huggingface&logoColor=black" alt="Hugging Face Paper"/>
 </a>
 
+[![Hugging Face Paper](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-yellow)](https://huggingface.co/papers/2607.11088)
+
+
+
 [![Hugging Face Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-yellow)](https://huggingface.co/jsookim/CUST)
 
 
