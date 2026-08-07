@@ -1,6 +1,5 @@
 <!-- Hugging Face Paper 배지 -->
 [![Hugging Face Paper](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Paper-blue)](https://huggingface.co/papers/2607.11088)
-
 [![Hugging Face Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-yellow)](https://huggingface.co/jsookim/CUST)
 
 
